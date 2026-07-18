@@ -1,8 +1,7 @@
-// ai/fix.js — called when the build fails
-// Reads the build error log, feeds it back to Gemini, lets it fix the code,
-// re-runs gradle. Loops up to FIX_MAX_ATTEMPTS times.
+// ai/fix.js — auto-fix loop when build fails
+// Uses @google/genai (new SDK).
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import fs from 'fs/promises';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -26,10 +25,11 @@ async function runBuild() {
 
 async function askGeminiForFix(buildError) {
   const apiKey = process.env.GEMINI_API_KEY;
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-2.0-flash' });
+  if (!apiKey) throw new Error('GEMINI_API_KEY not set');
+  const ai = new GoogleGenAI({ apiKey });
+  const model = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 
-  // Read current MainActivity so the model has context
+  // Read current MainActivity as context
   let mainActivity = '';
   try {
     mainActivity = await fs.readFile('app/src/main/java/com/example/app/MainActivity.java', 'utf8');
@@ -41,17 +41,14 @@ async function askGeminiForFix(buildError) {
 ${buildError.slice(-5000)}
 \`\`\`
 
-Here is the current MainActivity.java:
+Current MainActivity.java:
 
 \`\`\`java
 ${mainActivity}
 \`\`\`
 
-List the files in the project so you know what's there: run \`find app/src/main -type f\` (you can imagine the output — focus on Java and XML files).
+Output ONLY a JSON object (no markdown fences, no prose) describing the surgical fixes:
 
-Output a JSON object describing the fixes. Format:
-
-\`\`\`json
 {
   "edits": [
     { "filepath": "app/src/main/java/com/example/app/MainActivity.java", "old_string": "exact text to replace", "new_string": "replacement" }
@@ -61,19 +58,28 @@ Output a JSON object describing the fixes. Format:
   ],
   "explanation": "Why this fixes the build"
 }
-\`\`\`
 
-Only output the JSON. No prose before or after. Be surgical — only fix what's broken. Don't rewrite files that don't need changes.`;
+Rules:
+- Only fix what's broken
+- old_string must be unique in the file
+- Don't rewrite files that don't need changes
+- Java is in package com.example.app
+- If you need a layout file, put it under app/src/main/res/layout/`;
 
-  const result = await model.generateContent(prompt);
-  const text = result.response.text();
+  const response = await ai.models.generateContent({ model, contents: prompt });
+  const text = response.text || '';
 
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) {
-    log('Could not extract JSON from Gemini response');
+    log('Could not extract JSON from response');
     return null;
   }
-  return JSON.parse(match[0]);
+  try {
+    return JSON.parse(match[0]);
+  } catch (e) {
+    log('JSON parse failed:', e.message);
+    return null;
+  }
 }
 
 async function applyFixes(plan) {
@@ -83,7 +89,7 @@ async function applyFixes(plan) {
     try {
       const current = await fs.readFile(edit.filepath, 'utf8');
       if (!current.includes(edit.old_string)) {
-        log(`  ! old_string not found in ${edit.filepath}, skipping edit`);
+        log(`  ! old_string not found in ${edit.filepath}, skipping`);
         continue;
       }
       await fs.writeFile(edit.filepath, current.replace(edit.old_string, edit.new_string), 'utf8');
