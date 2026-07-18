@@ -8,13 +8,13 @@ on:
         required: true
         type: string
       model:
-        description: 'Gemini model to use'
+        description: 'Gemini model to use (lite has higher free-tier quota)'
         required: false
-        default: 'gemini-3.5-flash'
+        default: 'gemini-3.1-flash-lite'
         type: choice
         options:
-          - gemini-3.5-flash
           - gemini-3.1-flash-lite
+          - gemini-3.5-flash
           - gemini-flash-latest
 
   push:
@@ -65,7 +65,7 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           USER_PROMPT: ${{ inputs.prompt || github.event.head_commit.message }}
-          GEMINI_MODEL: ${{ inputs.model || 'gemini-3.5-flash' }}
+          GEMINI_MODEL: ${{ inputs.model || 'gemini-3.1-flash-lite' }}
         run: node ai/agent.js
 
       - name: Make gradlew executable
@@ -80,7 +80,7 @@ jobs:
         if: steps.build.outcome == 'failure'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ inputs.model || 'gemini-3.5-flash' }}
+          GEMINI_MODEL: ${{ inputs.model || 'gemini-3.1-flash-lite' }}
         run: node ai/fix.js
         continue-on-error: true
 
