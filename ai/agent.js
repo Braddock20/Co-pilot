@@ -1,17 +1,16 @@
 // ai/agent.js — main agent loop
-// Reads USER_PROMPT from env, calls Gemini with tools, executes tool calls,
-// loops until the model says it's done or we hit MAX_ITERATIONS.
+// Uses @google/genai (the new SDK, replacing the deprecated @google/generative-ai)
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
+import fs from 'fs/promises';
 import { TOOLS, executeTool } from './tools.js';
 import { SYSTEM_PROMPT } from './prompt.js';
 
 const MAX_ITERATIONS = 20;
-const MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+// Current stable models (as of July 2026). Override with GEMINI_MODEL env var.
+const MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 
-function log(...args) {
-  console.log('[agent]', ...args);
-}
+function log(...args) { console.log('[agent]', ...args); }
 
 async function main() {
   const userPrompt = process.env.USER_PROMPT;
@@ -26,31 +25,41 @@ async function main() {
     process.exit(1);
   }
 
-  log('Starting agent for prompt:', userPrompt);
-  log('Model:', MODEL);
+  log('Starting agent. Model:', MODEL);
+  log('Prompt:', userPrompt);
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({
-    model: MODEL,
+  const ai = new GoogleGenAI({ apiKey });
+
+  // Build the config with tools + system instruction
+  const config = {
     systemInstruction: SYSTEM_PROMPT,
     tools: [{ functionDeclarations: TOOLS }],
-  });
+    temperature: 0.2,
+  };
 
-  const chat = model.startChat();
-  let iteration = 0;
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
+  const chat = ai.chats.create({ model: MODEL, config });
 
   // Kick off with the user's request
-  let result = await chat.sendMessage(userPrompt);
-  totalInputTokens += result.response.usageMetadata?.promptTokenCount || 0;
-  totalOutputTokens += result.response.usageMetadata?.candidatesTokenCount || 0;
+  let response = await chat.sendMessage({ message: userPrompt });
+
+  let iteration = 0;
+  let totalIn = 0;
+  let totalOut = 0;
+
+  const recordUsage = (resp) => {
+    const usage = resp.usageMetadata;
+    if (usage) {
+      totalIn += usage.promptTokenCount || 0;
+      totalOut += usage.candidatesTokenCount || 0;
+    }
+  };
+  recordUsage(response);
 
   while (iteration < MAX_ITERATIONS) {
     iteration++;
     log(`--- iteration ${iteration} ---`);
 
-    const candidate = result.response.candidates?.[0];
+    const candidate = response.candidates?.[0];
     if (!candidate) {
       log('No candidate in response, stopping');
       break;
@@ -58,63 +67,79 @@ async function main() {
 
     const parts = candidate.content?.parts || [];
 
-    // If the model wants to call tools
-    const functionCalls = parts.filter((p) => p.functionCall);
-    const textParts = parts.filter((p) => p.text).map((p) => p.text);
-
-    for (const text of textParts) {
-      log('model says:', text);
+    // Log any text the model said
+    for (const part of parts) {
+      if (part.text) log('model says:', part.text);
     }
 
+    // Collect function calls
+    const functionCalls = (response.functionCalls || []).concat(
+      parts.filter((p) => p.functionCall).map((p) => p.functionCall)
+    );
+
     if (functionCalls.length === 0) {
-      log('No more tool calls. Agent finished.');
+      log('No more function calls. Agent finished.');
       break;
     }
 
-    // Execute each tool call and collect results
-    const toolResults = [];
-    for (const part of functionCalls) {
-      const { name, args } = part.functionCall;
+    // Build the function response parts
+    const responseParts = [];
+    for (const fc of functionCalls) {
+      const name = fc.name;
+      const args = fc.args || {};
       log(`tool call: ${name}(${JSON.stringify(args).slice(0, 200)})`);
 
+      let output;
       try {
-        const output = await executeTool(name, args);
-        toolResults.push({
-          functionResponse: {
-            name,
-            response: { result: output },
-          },
-        });
+        output = await executeTool(name, args);
       } catch (err) {
         log(`tool ${name} threw:`, err.message);
-        toolResults.push({
-          functionResponse: {
-            name,
-            response: { error: err.message },
-          },
-        });
+        output = { error: err.message };
       }
+
+      // If the model called `finish`, capture the summary and end the loop.
+      if (name === 'finish') {
+        log('FINISH called by agent');
+        await fs.writeFile('ai-summary.md', `# AI Build Summary\n\n${output.summary || output}\n\n_Iterations: ${iteration}, tokens in: ${totalIn}, out: ${totalOut}_`);
+        // Still send a response so the chat ends cleanly, but we'll break next.
+        responseParts.push({ functionResponse: { name, response: { result: 'Acknowledged. Build will now run.' } } });
+        response = await chat.sendMessage({ message: responseParts });
+        recordUsage(response);
+        // Exit after this iteration
+        iteration = MAX_ITERATIONS;
+        break;
+      }
+
+      // Truncate huge outputs to protect context
+      let responsePayload = output;
+      if (typeof output === 'string' && output.length > 20_000) {
+        responsePayload = output.slice(0, 20_000) + `\n...[truncated]`;
+      }
+
+      responseParts.push({ functionResponse: { name, response: { result: String(responsePayload) } } });
     }
 
-    // Send tool results back to the model
-    result = await chat.sendMessage(toolResults);
-    totalInputTokens += result.response.usageMetadata?.promptTokenCount || 0;
-    totalOutputTokens += result.response.usageMetadata?.candidatesTokenCount || 0;
+    if (iteration >= MAX_ITERATIONS) break;
+
+    // Send all tool results back
+    response = await chat.sendMessage({ message: responseParts });
+    recordUsage(response);
   }
 
   if (iteration >= MAX_ITERATIONS) {
-    log(`Hit MAX_ITERATIONS (${MAX_ITERATIONS}). Stopping.`);
+    log(`Hit iteration limit. Total in/out tokens: ${totalIn}/${totalOut}`);
   }
 
-  log(`Done. Iterations: ${iteration}, tokens in/out: ${totalInputTokens}/${totalOutputTokens}`);
-
-  // Write a summary file the workflow can pick up
-  const fs = await import('fs/promises');
-  const lastText = (result.response.candidates?.[0]?.content?.parts || [])
-    .filter((p) => p.text)
-    .map((p) => p.text)
-    .join('\n');
-  await fs.writeFile('ai-summary.md', `# AI Build Summary\n\n${lastText}\n\n_Iterations: ${iteration}, tokens in: ${totalInputTokens}, out: ${totalOutputTokens}_`);
+  // Write summary if we didn't already (e.g. agent didn't call finish)
+  try {
+    await fs.access('ai-summary.md');
+  } catch {
+    const lastText = (response.candidates?.[0]?.content?.parts || [])
+      .filter((p) => p.text)
+      .map((p) => p.text)
+      .join('\n');
+    await fs.writeFile('ai-summary.md', `# AI Build Summary\n\n${lastText || '(no summary produced)'}\n\n_Iterations: ${iteration}, tokens in: ${totalIn}, out: ${totalOut}_`);
+  }
 }
 
 main().catch((err) => {
