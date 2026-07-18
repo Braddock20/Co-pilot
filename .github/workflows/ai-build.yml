@@ -8,13 +8,14 @@ on:
         required: true
         type: string
       model:
-        description: 'Gemini model to use (lite has higher free-tier quota)'
+        description: 'Gemini model — flash (default, smart + free-tier friendly) or pro (best, slower, lower quota)'
         required: false
-        default: 'gemini-3.1-flash-lite'
+        default: 'gemini-3.5-flash'
         type: choice
         options:
-          - gemini-3.1-flash-lite
           - gemini-3.5-flash
+          - gemini-3.1-flash-lite
+          - gemini-3.1-pro-preview
           - gemini-flash-latest
 
   push:
@@ -61,11 +62,11 @@ jobs:
       - name: Install Node dependencies
         run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
 
-      - name: Run AI agent
+      - name: Run AI agent (build + self-review)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           USER_PROMPT: ${{ inputs.prompt || github.event.head_commit.message }}
-          GEMINI_MODEL: ${{ inputs.model || 'gemini-3.1-flash-lite' }}
+          GEMINI_MODEL: ${{ inputs.model || 'gemini-3.5-flash' }}
         run: node ai/agent.js
 
       - name: Make gradlew executable
@@ -80,7 +81,7 @@ jobs:
         if: steps.build.outcome == 'failure'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ inputs.model || 'gemini-3.1-flash-lite' }}
+          GEMINI_MODEL: ${{ inputs.model || 'gemini-3.5-flash' }}
         run: node ai/fix.js
         continue-on-error: true
 
@@ -116,5 +117,14 @@ jobs:
         with:
           name: ai-summary
           path: ai-summary.md
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload review logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-review-logs
+          path: ai-review-*.json
           if-no-files-found: ignore
           retention-days: 14
