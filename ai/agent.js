@@ -7,10 +7,33 @@ import { TOOLS, executeTool } from './tools.js';
 import { SYSTEM_PROMPT } from './prompt.js';
 
 const MAX_ITERATIONS = 20;
-// Current stable models (as of July 2026). Override with GEMINI_MODEL env var.
-const MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+// Default to the lite model — much higher free-tier rate limit (15 RPM vs 5).
+// Override with GEMINI_MODEL env var if you have a paid tier.
+const MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
 
 function log(...args) { console.log('[agent]', ...args); }
+
+// Sleep helper for rate-limit backoff
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Call a Gemini function with retry on 429 (rate limit)
+async function withRetry(fn, label = 'gemini call') {
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = err.status || err.code;
+      const isRateLimit = status === 429 || /RESOURCE_EXHAUSTED|rate.?limit|quota/i.test(err.message || '');
+      if (!isRateLimit || attempt === maxAttempts) throw err;
+      // Extract retry delay from error if present, else exponential backoff
+      const match = (err.message || '').match(/retry in ([\d.]+)s/i);
+      const waitSec = match ? Math.ceil(parseFloat(match[1])) + 1 : Math.min(60, 2 ** attempt);
+      log(`${label} hit rate limit (attempt ${attempt}/${maxAttempts}), waiting ${waitSec}s...`);
+      await sleep(waitSec * 1000);
+    }
+  }
+}
 
 async function main() {
   const userPrompt = process.env.USER_PROMPT;
@@ -40,7 +63,10 @@ async function main() {
   const chat = ai.chats.create({ model: MODEL, config });
 
   // Kick off with the user's request
-  let response = await chat.sendMessage({ message: userPrompt });
+  let response = await withRetry(
+    () => chat.sendMessage({ message: userPrompt }),
+    'initial sendMessage'
+  );
 
   let iteration = 0;
   let totalIn = 0;
@@ -72,10 +98,12 @@ async function main() {
       if (part.text) log('model says:', part.text);
     }
 
-    // Collect function calls
-    const functionCalls = (response.functionCalls || []).concat(
-      parts.filter((p) => p.functionCall).map((p) => p.functionCall)
-    );
+    // Collect function calls — prefer response.functionCalls (the new SDK's
+    // normalized accessor). Only fall back to parts if it's empty.
+    let functionCalls = response.functionCalls || [];
+    if (functionCalls.length === 0) {
+      functionCalls = parts.filter((p) => p.functionCall).map((p) => p.functionCall);
+    }
 
     if (functionCalls.length === 0) {
       log('No more function calls. Agent finished.');
@@ -103,7 +131,10 @@ async function main() {
         await fs.writeFile('ai-summary.md', `# AI Build Summary\n\n${output.summary || output}\n\n_Iterations: ${iteration}, tokens in: ${totalIn}, out: ${totalOut}_`);
         // Still send a response so the chat ends cleanly, but we'll break next.
         responseParts.push({ functionResponse: { name, response: { result: 'Acknowledged. Build will now run.' } } });
-        response = await chat.sendMessage({ message: responseParts });
+        response = await withRetry(
+          () => chat.sendMessage({ message: responseParts }),
+          'sendMessage (finish branch)'
+        );
         recordUsage(response);
         // Exit after this iteration
         iteration = MAX_ITERATIONS;
@@ -122,7 +153,10 @@ async function main() {
     if (iteration >= MAX_ITERATIONS) break;
 
     // Send all tool results back
-    response = await chat.sendMessage({ message: responseParts });
+    response = await withRetry(
+      () => chat.sendMessage({ message: responseParts }),
+      'sendMessage (loop)'
+    );
     recordUsage(response);
   }
 
