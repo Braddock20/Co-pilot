@@ -11,6 +11,25 @@ const FIX_MAX_ATTEMPTS = 3;
 
 function log(...args) { console.log('[fix]', ...args); }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function withRetry(fn, label = 'gemini call') {
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = err.status || err.code;
+      const isRateLimit = status === 429 || /RESOURCE_EXHAUSTED|rate.?limit|quota/i.test(err.message || '');
+      if (!isRateLimit || attempt === maxAttempts) throw err;
+      const match = (err.message || '').match(/retry in ([\d.]+)s/i);
+      const waitSec = match ? Math.ceil(parseFloat(match[1])) + 1 : Math.min(60, 2 ** attempt);
+      log(`${label} hit rate limit (attempt ${attempt}/${maxAttempts}), waiting ${waitSec}s...`);
+      await sleep(waitSec * 1000);
+    }
+  }
+}
+
 async function runBuild() {
   try {
     const { stdout, stderr } = await execAsync('./gradlew assembleDebug --no-daemon', {
@@ -66,7 +85,10 @@ Rules:
 - Java is in package com.example.app
 - If you need a layout file, put it under app/src/main/res/layout/`;
 
-  const response = await ai.models.generateContent({ model, contents: prompt });
+  const response = await withRetry(
+    () => ai.models.generateContent({ model, contents: prompt }),
+    'fix generateContent'
+  );
   const text = response.text || '';
 
   const match = text.match(/\{[\s\S]*\}/);
