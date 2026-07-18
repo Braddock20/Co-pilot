@@ -73,7 +73,7 @@ Example prompts to try:
 
 ## Cost
 
-Gemini 2.0 Flash free tier is generous. For personal use you should stay well under any limits. Set `GEMINI_MODEL` to `gemini-1.5-pro` if you want higher quality (slower, costs more).
+Gemini 2.0 Flash free tier is generous. For personal use you should stay well under any limits. Set `GEMINI_MODEL` to `gemini-3.5-flash` if you want higher quality (slower, costs more).
 
 ## Limitations
 
