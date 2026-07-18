@@ -1,0 +1,36 @@
+# Built artifacts
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Gradle
+.gradle/
+build/
+local.properties
+
+# Node
+node_modules/
+npm-debug.log*
+
+# AI run outputs (don't commit these)
+ai-summary.md
+ai-debug.log
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Keystores (NEVER)
+*.jks
+*.keystore
+*.b64
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
