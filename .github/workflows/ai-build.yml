@@ -1,0 +1,120 @@
+name: AI Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'Describe the Android app you want (e.g. "a counter app with a big +1 button")'
+        required: true
+        type: string
+      model:
+        description: 'Gemini model to use'
+        required: false
+        default: 'gemini-2.0-flash'
+        type: choice
+        options:
+          - gemini-2.0-flash
+          - gemini-2.0-flash-thinking-exp
+          - gemini-1.5-pro
+
+  push:
+    branches: [main]
+    paths: ['ai/**', '.github/workflows/ai-build.yml']
+
+jobs:
+  ai-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 34
+          build-tools-version: '34.0.0'
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Install Node dependencies
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+
+      - name: Run AI agent
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          USER_PROMPT: ${{ inputs.prompt || github.event.head_commit.message }}
+          GEMINI_MODEL: ${{ inputs.model || 'gemini-2.0-flash' }}
+        run: node ai/agent.js
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Build APK
+        id: build
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        continue-on-error: true
+
+      - name: Auto-fix loop (if build failed)
+        if: steps.build.outcome == 'failure'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ inputs.model || 'gemini-2.0-flash' }}
+        run: node ai/fix.js
+        continue-on-error: true
+
+      - name: Final build attempt
+        if: steps.build.outcome == 'failure'
+        run: ./gradlew assembleDebug --no-daemon
+        continue-on-error: true
+
+      - name: Check for APK
+        id: check_apk
+        run: |
+          if ls app/build/outputs/apk/debug/*.apk 1> /dev/null 2>&1; then
+            echo "apk_found=true" >> $GITHUB_OUTPUT
+            ls -lh app/build/outputs/apk/debug/*.apk
+          else
+            echo "apk_found=false" >> $GITHUB_OUTPUT
+            echo "ERROR: No APK produced. Check the agent log and fix loop output above."
+            exit 1
+          fi
+
+      - name: Upload APK artifact
+        if: steps.check_apk.outputs.apk_found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-built-app
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload AI summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-summary
+          path: ai-summary.md
+          if-no-files-found: ignore
+          retention-days: 14
