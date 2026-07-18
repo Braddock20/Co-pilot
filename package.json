@@ -1,0 +1,13 @@
+{
+  "name": "android-ai-builder",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "agent": "node ai/agent.js",
+    "fix": "node ai/fix.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0"
+  }
+}
