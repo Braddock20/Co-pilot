@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "agent": "node ai/agent.js",
-    "fix": "node ai/fix.js"
+    "fix": "node ai/fix.js",
+    "smoke-test": "node --import=./ai/test-loader.mjs ./ai/smoke-test-loop.js"
   },
   "dependencies": {
     "@google/genai": "^1.0.0"
