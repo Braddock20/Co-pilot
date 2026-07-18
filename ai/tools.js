@@ -93,8 +93,19 @@ export const TOOLS = [
     },
   },
   {
+    name: 'review_code',
+    description:
+      'MANDATORY self-review pass. Call this BEFORE you call finish. It triggers a separate, focused review of all the code you have written and returns a JSON list of issues (unwired buttons, missing strings, layout/logic bugs, missing Material components, etc). After getting the review, fix every critical and major issue with edit_file/write_file. You can call review_code up to 3 times total — keep calling it until the issues array is empty (or only contains minor issues you have decided to leave).',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
     name: 'finish',
-    description: 'Call this when you are done making changes. The build will run automatically after this.',
+    description:
+      'Call this ONLY after you have called review_code and addressed the issues it found. The build will run automatically after this. Do NOT call finish before calling review_code at least once.',
     parameters: {
       type: 'object',
       properties: {
@@ -239,6 +250,13 @@ function finish({ summary }) {
   return `Finished: ${summary}`;
 }
 
+// review_code is handled in agent.js (it needs the api key and chat context
+// to do the second pass). We just return a marker here; the agent loop will
+// intercept it and run the real review.
+function reviewCode() {
+  return { status: 'review_requested', note: 'Agent loop will run the review pass and return the result.' };
+}
+
 export async function executeTool(name, args) {
   switch (name) {
     case 'list_files': return await listFiles(args);
@@ -246,6 +264,7 @@ export async function executeTool(name, args) {
     case 'write_file': return await writeFile(args);
     case 'edit_file': return await editFile(args);
     case 'run_command': return await runCommand(args);
+    case 'review_code': return reviewCode(args);
     case 'finish': return finish(args);
     default: return `Error: unknown tool ${name}`;
   }
