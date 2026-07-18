@@ -16,6 +16,7 @@ npm-debug.log*
 
 # AI run outputs (don't commit these)
 ai-summary.md
+ai-review-*.json
 ai-debug.log
 
 # IDE
